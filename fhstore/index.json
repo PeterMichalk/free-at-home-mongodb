@@ -1,0 +1,25 @@
+{
+  "version": 1.0,
+  "keywords": [
+    "nuki",
+    "smart-lock",
+    "door-lock",
+    "security",
+    "home-automation",
+    "bridge-api"
+  ],
+  "category": "device",
+  "licenseFile": {
+    "en": "mit-en.txt"
+  },
+  "iconUrl": "icon.svg",
+  "pictureFiles": {
+    "de": [
+      "pics/placeholder.webp"
+    ],
+    "en": [
+      "pics/placeholder.webp"
+    ]
+  },
+  "videoFiles": {}
+}

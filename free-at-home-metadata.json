@@ -1,0 +1,54 @@
+{
+  "name": "free@home MongoDB Logger",
+  "version": "1.0.0",
+  "id": "tech.michalk.freeathome.mongodb",
+  "license": "MIT",
+  "description": "Speichert alle Änderungen im free@home Smarthome System in einer Azure MongoDB Datenbank. Überwacht alle Geräte, Channels und Datapoints via Websocket.",
+  "url": "https://www.michalk.tech",
+  "author": "Peter Michalk",
+  "type": "app",
+  "entryPoint": "build/main.js",
+  "parameters": {
+    "default": {
+      "name": "Settings",
+      "items": {
+        "mongodbUri": {
+          "name": "MongoDB URI",
+          "type": "string",
+          "description": "Azure MongoDB Connection String (z.B. mongodb+srv://user:password@cluster.mongodb.net/)",
+          "required": true
+        },
+        "mongodbDb": {
+          "name": "MongoDB Database Name",
+          "type": "string",
+          "description": "Name der MongoDB Datenbank (Standard: freeathome)",
+          "required": false
+        },
+        "mongodbCol": {
+          "name": "MongoDB Collection Name",
+          "type": "string",
+          "description": "Name der MongoDB Collection (Standard: device_changes)",
+          "required": false
+        },
+        "sysapUri": {
+          "name": "SysAP URI",
+          "type": "string",
+          "description": "free@home SysAP URI (z.B. 192.168.1.100 oder localhost)",
+          "required": false
+        },
+        "username": {
+          "name": "Username",
+          "type": "string",
+          "description": "free@home Username (optional, kann auch über Umgebungsvariable FREEHOME_USERNAME gesetzt werden)",
+          "required": false
+        },
+        "password": {
+          "name": "Password",
+          "type": "password",
+          "description": "free@home Password (optional, kann auch über Umgebungsvariable FREEHOME_PASSWORD gesetzt werden)",
+          "required": false
+        }
+      }
+    }
+  }
+}

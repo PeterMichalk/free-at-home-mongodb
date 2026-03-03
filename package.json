@@ -1,0 +1,53 @@
+{
+  "name": "free-at-home-mongodb",
+  "version": "1.0.0",
+  "description": "free@home Addon zur Speicherung aller Smarthome-Änderungen in Azure MongoDB",
+  "main": "build/main.js",
+  "scripts": {
+    "start": "node build/main.js",
+    "build": "tsc -p .",
+    "postbuild": "npm run validate",
+    "buildProd": "tsc  -p . --sourceMap false --declarationMap false",
+    "postbuildProd": "npm run postbuild",
+    "validate": "free-at-home-cli validate",
+    "prepack": "npm run buildProd",
+    "pack": "free-at-home-cli buildscriptarchive build",
+    "journal": "free-at-home-cli journal --filterAddon",
+    "monitorstate": "free-at-home-cli addonapplicationstate --clear",
+    "monitorconfig": "free-at-home-cli addonconfiguration --clear",
+    "clean": "rm -rf build"
+  },
+  "keywords": [
+    "free-at-home",
+    "nuki",
+    "smart-lock",
+    "home-automation",
+    "abb"
+  ],
+  "author": "Peter Michalk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PeterMichalk/free-at-home-nuki.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeterMichalk/free-at-home-nuki/issues"
+  },
+  "homepage": "https://www.michalk.tech",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@busch-jaeger/free-at-home": "0.33.1",
+    "mongodb": "^4.17.1",
+    "ts-mixer": "5.4.0",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@busch-jaeger/free-at-home-cli": "^0.9.1",
+    "@tsconfig/node18": "^18.2.2",
+    "@types/node": "^18.15.3",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.2.2"
+  }
+}

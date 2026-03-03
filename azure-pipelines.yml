@@ -1,0 +1,71 @@
+trigger:
+  tags:
+    include:
+    - v*
+  branches:
+    include:
+    - '*'
+
+pool: 
+  vmImage: ubuntu-22.04
+
+steps:
+- task: NodeTool@0
+  inputs:
+    versionSpec: '18.x'
+- task: Npm@1
+  displayName: 'npm install'
+  inputs:
+    command: 'install'
+    workingDir: '$(Build.SourcesDirectory)'
+- task: Npm@1
+  displayName: 'npm run buildProd'
+  inputs:
+    command: 'custom'
+    workingDir: '$(Build.SourcesDirectory)'
+    customCommand: 'run buildProd'
+- task: Npm@1
+  displayName: 'npm run pack'
+  inputs:
+    command: 'custom'
+    workingDir: '$(Build.SourcesDirectory)'
+    customCommand: 'run pack'
+- task: CmdLine@2
+  displayName: 'compress addon archive'
+  inputs:
+    script: 'bzip2 -z *.tar'
+- task: CopyFiles@2
+  displayName: 'copy archive to artifact dir'
+  inputs:
+    SourceFolder: '$(Build.SourcesDirectory)'
+    Contents: '*.tar.bz2'
+    TargetFolder: '$(Build.StagingDirectory)'
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: '$(Build.SourcesDirectory)/fhstore'
+    includeRootFolder: true
+    archiveType: 'tar'
+    tarCompression: 'none'
+    archiveFile: '$(Build.StagingDirectory)/$(Build.Repository.Name)-fhstore.tar'
+    replaceExistingArchive: true
+    verbose: true
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.StagingDirectory)'
+    ArtifactName: 'free at home archive'
+    publishLocation: 'Container'
+- task: DownloadBuildArtifacts@1
+  displayName: 'download warden cli'
+  inputs:
+    buildType: 'specific'
+    project: 'cdc66582-4317-419c-9804-b5c9a44d0fdd'
+    pipeline: '473'
+    buildVersionToDownload: 'latestFromBranch'
+    branchName: 'refs/heads/main'
+    downloadType: 'single'
+    artifactName: 'scriptstore-warden'
+    downloadPath: '$(System.ArtifactsDirectory)'
+- script: |
+    chmod +x $(System.ArtifactsDirectory)/scriptstore-warden
+    $(System.ArtifactsDirectory)/scriptstore-warden  --quickcheck .
+  displayName: 'validate store index files'

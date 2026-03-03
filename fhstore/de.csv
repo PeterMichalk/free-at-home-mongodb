@@ -1,0 +1,4 @@
+id,text
+s_name,Nuki Smart Lock Integration
+s_short_description,Integration von Nuki Smart Locks in free@home
+s_description,Integriert Nuki Smart Locks über die lokale Bridge API in das ABB free@home System. Unterstützt mehrere Schlösser gleichzeitig mit automatischer Status-Synchronisation. Ermöglicht Verriegeln und Entriegeln direkt aus der free@home App.
