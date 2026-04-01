@@ -1,6 +1,6 @@
 {
   "name": "free@home MongoDB Logger",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "id": "tech.michalk.freeathome.mongodb",
   "license": "MIT",
   "description": "Speichert alle Änderungen im free@home Smarthome System in einer Azure MongoDB Datenbank. Überwacht alle Geräte, Channels und Datapoints via Websocket.",
@@ -24,10 +24,28 @@
           "description": "Name der MongoDB Datenbank (Standard: freeathome)",
           "required": false
         },
-        "mongodbCol": {
-          "name": "MongoDB Collection Name",
+        "mongodbColDatapoints": {
+          "name": "MongoDB Datapoints Collection",
           "type": "string",
-          "description": "Name der MongoDB Collection (Standard: device_changes)",
+          "description": "Collection für Datapoint-Änderungen (leer = Wert von mongodbCol)",
+          "required": false
+        },
+        "mongodbColDevices": {
+          "name": "MongoDB Device Config Collection",
+          "type": "string",
+          "description": "Collection für Device-Konfigurationsänderungen (leer = Wert von mongodbCol)",
+          "required": false
+        },
+        "filterDeviceSerials": {
+          "name": "Filter: Geräte-Seriennummern",
+          "type": "string",
+          "description": "Komma-getrennte Seriennummern der zu loggenden Geräte (leer = alle)",
+          "required": false
+        },
+        "filterChannelFunctions": {
+          "name": "Filter: Kanal-FunctionIDs",
+          "type": "string",
+          "description": "Komma-getrennte functionIDs der zu loggenden Kanäle, z.B. 7,12,48 (leer = alle)",
           "required": false
         },
         "sysapUri": {

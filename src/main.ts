@@ -1,4 +1,6 @@
 import { AddOn } from '@busch-jaeger/free-at-home';
+import type { WebsocketMessage } from '@busch-jaeger/free-at-home/lib/fhapi/models/WebsocketMessage';
+import type { Device } from '@busch-jaeger/free-at-home/lib/fhapi/models/Device';
 import { MongoClient, Db, Collection } from 'mongodb';
 import WebSocket from 'ws';
 
@@ -6,21 +8,103 @@ import WebSocket from 'ws';
 interface AddOnConfiguration {
   mongodbUri?: string;
   mongodbDb?: string;
-  mongodbCol?: string;
+  mongodbColDatapoints?: string;
+  mongodbColDevices?: string;
   sysapUri?: string;
   username?: string;
   password?: string;
+  filterDeviceSerials?: string;
+  filterChannelFunctions?: string;
+}
+
+// Filter-Konfiguration
+export interface FilterConfig {
+  deviceSerials: Set<string>;    // leer = kein Filter
+  channelFunctions: Set<string>; // leer = kein Filter
+}
+
+export function parseFilterConfig(rawSerials?: string, rawFunctions?: string): FilterConfig {
+  const parseSet = (raw: string | undefined): Set<string> => {
+    if (!raw || raw.trim() === '') return new Set();
+    return new Set(raw.split(',').map(s => s.trim()).filter(s => s.length > 0));
+  };
+  return {
+    deviceSerials: parseSet(rawSerials),
+    channelFunctions: parseSet(rawFunctions),
+  };
+}
+
+export function parseDatapointKey(key: string): { serial: string; channelId: string } | null {
+  const parts = key.split('/');
+  if (parts.length !== 3) return null;
+  return { serial: parts[0], channelId: parts[1] };
+}
+
+export function filterDatapoints(
+  datapoints: Record<string, string>,
+  filter: FilterConfig,
+  deviceFunctionMap: Map<string, Map<string, string>>
+): Record<string, string> {
+  if (filter.deviceSerials.size === 0 && filter.channelFunctions.size === 0) {
+    return datapoints;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(datapoints)) {
+    const parsed = parseDatapointKey(key);
+    if (!parsed) continue;
+    const { serial, channelId } = parsed;
+    if (filter.deviceSerials.size > 0 && !filter.deviceSerials.has(serial)) continue;
+    if (filter.channelFunctions.size > 0) {
+      const funcId = deviceFunctionMap.get(serial)?.get(channelId);
+      if (!funcId || !filter.channelFunctions.has(funcId)) continue;
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+export function filterDevices(
+  devices: Record<string, Device>,
+  filter: FilterConfig
+): Record<string, Device> {
+  if (filter.deviceSerials.size === 0 && filter.channelFunctions.size === 0) {
+    return devices;
+  }
+  const result: Record<string, Device> = {};
+  for (const [serial, device] of Object.entries(devices)) {
+    if (filter.deviceSerials.size > 0 && !filter.deviceSerials.has(serial)) continue;
+    if (filter.channelFunctions.size > 0) {
+      // functionID-Filter aktiv: Gerät ohne Channels kann keinen Channel matchen → ausschließen
+      if (!device.channels) continue;
+      const filteredChannels: Record<string, import('@busch-jaeger/free-at-home/lib/fhapi/models/Channel').Channel> = {};
+      for (const [chanId, channel] of Object.entries(device.channels)) {
+        if (channel.functionID && filter.channelFunctions.has(channel.functionID)) {
+          filteredChannels[chanId] = channel;
+        }
+      }
+      if (Object.keys(filteredChannels).length === 0) continue;
+      result[serial] = { ...device, channels: filteredChannels };
+    } else {
+      result[serial] = device;
+    }
+  }
+  return result;
 }
 
 // MongoDB Manager
-class MongoDBManager {
+export class MongoDBManager {
   private client: MongoClient | null = null;
   private db: Db | null = null;
-  private collection: Collection | null = null;
   private connectionString: string = '';
   private databaseName: string = 'freeathome';
-  private collectionName: string = 'device_changes';
   private isConnected: boolean = false;
+  private readonly maxPendingEvents: number = 1000;
+  private collectionDatapoints: Collection | null = null;
+  private collectionDevices: Collection | null = null;
+  private collectionNameDatapoints: string = 'datapoints';
+  private collectionNameDevices: string = 'device_config';
+  private pendingDatapoints: any[] = [];
+  private pendingDevices: any[] = [];
 
   /**
    * Normalisiert den Connection String für Azure Cosmos DB
@@ -76,7 +160,7 @@ class MongoDBManager {
   /**
    * Verbindet sich mit MongoDB
    */
-  async connect(connectionString: string, databaseName?: string, collectionName?: string): Promise<void> {
+  async connect(connectionString: string, databaseName?: string, collectionNameDatapoints?: string, collectionNameDevices?: string): Promise<void> {
     if (this.isConnected && this.connectionString === connectionString) {
       console.log('MongoDB bereits verbunden');
       return;
@@ -84,7 +168,6 @@ class MongoDBManager {
 
     this.connectionString = connectionString;
     if (databaseName) this.databaseName = databaseName;
-    if (collectionName) this.collectionName = collectionName;
 
     try {
       console.log('Verbinde mit MongoDB...');
@@ -111,8 +194,8 @@ class MongoDBManager {
       // Azure Cosmos DB spezifische Optionen
       if (isCosmosDB) {
         clientOptions.retryWrites = false; // Cosmos DB unterstützt kein retryWrites
-        clientOptions.tls = true; // Erzwinge TLS/SSL
-        clientOptions.tlsAllowInvalidCertificates = false;
+        // Kein tls:true setzen – ssl=true im Connection String reicht; doppelte TLS-Optionen
+        // können beim MongoDB-Driver v4 zu HandshakeError führen
         console.log('Azure Cosmos DB erkannt - verwende spezielle Optionen');
       }
       
@@ -141,10 +224,35 @@ class MongoDBManager {
       }
       
       this.db = this.client.db(this.databaseName);
-      this.collection = this.db.collection(this.collectionName);
-      
+
+      if (collectionNameDatapoints) this.collectionNameDatapoints = collectionNameDatapoints;
+      if (collectionNameDevices)    this.collectionNameDevices    = collectionNameDevices;
+      this.collectionDatapoints = this.db.collection(this.collectionNameDatapoints);
+      this.collectionDevices    = this.db.collection(this.collectionNameDevices);
+
       this.isConnected = true;
-      console.log(`MongoDB erfolgreich verbunden: ${this.databaseName}.${this.collectionName}`);
+      console.log(`MongoDB erfolgreich verbunden: ${this.databaseName} (${this.collectionNameDatapoints}, ${this.collectionNameDevices})`);
+
+      if (this.pendingDatapoints.length > 0) {
+        console.log(`Schreibe ${this.pendingDatapoints.length} gepufferte Datapoints nach...`);
+        try {
+          await this.collectionDatapoints.insertMany(this.pendingDatapoints, { ordered: false });
+          console.log(`${this.pendingDatapoints.length} Datapoints erfolgreich nachgeschrieben`);
+          this.pendingDatapoints = [];
+        } catch (error) {
+          console.error('Fehler beim Nachschreiben gepufferter Datapoints:', error);
+        }
+      }
+      if (this.pendingDevices.length > 0) {
+        console.log(`Schreibe ${this.pendingDevices.length} gepufferte Device-Config-Events nach...`);
+        try {
+          await this.collectionDevices.insertMany(this.pendingDevices, { ordered: false });
+          console.log(`${this.pendingDevices.length} Device-Config-Events erfolgreich nachgeschrieben`);
+          this.pendingDevices = [];
+        } catch (error) {
+          console.error('Fehler beim Nachschreiben gepufferter Device-Config-Events:', error);
+        }
+      }
     } catch (error: any) {
       this.isConnected = false;
       const errorMessage = error.message || error.toString();
@@ -166,23 +274,44 @@ class MongoDBManager {
   }
 
   /**
-   * Speichert ein Event in MongoDB
+   * Speichert einen Datapoint-Event in der Datapoints-Collection
    */
-  async saveEvent(event: any): Promise<void> {
-    if (!this.isConnected || !this.collection) {
-      console.warn('MongoDB nicht verbunden, Event wird nicht gespeichert');
+  async saveDatapointEvent(event: any): Promise<void> {
+    const document = { ...event, _date: new Date() };
+    if (!this.isConnected || !this.collectionDatapoints) {
+      if (this.pendingDatapoints.length < this.maxPendingEvents) {
+        this.pendingDatapoints.push(document);
+        console.warn(`MongoDB nicht verbunden. Datapoint-Event gepuffert (${this.pendingDatapoints.length}/${this.maxPendingEvents})`);
+      } else {
+        console.warn('Datapoint-Puffer voll, Event wird verworfen');
+      }
       return;
     }
-
     try {
-      // Füge Timestamp hinzu
-      const document = {
-        ...event,
-        _date: new Date()
-      };
-      await this.collection.insertOne(document);
+      await this.collectionDatapoints.insertOne(document);
     } catch (error) {
-      console.error('Fehler beim Speichern des Events in MongoDB:', error);
+      console.error('Fehler beim Speichern des Datapoint-Events:', error);
+    }
+  }
+
+  /**
+   * Speichert einen Device-Config-Event in der Device-Collection
+   */
+  async saveDeviceConfigEvent(event: any): Promise<void> {
+    const document = { ...event, _date: new Date() };
+    if (!this.isConnected || !this.collectionDevices) {
+      if (this.pendingDevices.length < this.maxPendingEvents) {
+        this.pendingDevices.push(document);
+        console.warn(`MongoDB nicht verbunden. Device-Config-Event gepuffert (${this.pendingDevices.length}/${this.maxPendingEvents})`);
+      } else {
+        console.warn('Device-Config-Puffer voll, Event wird verworfen');
+      }
+      return;
+    }
+    try {
+      await this.collectionDevices.insertOne(document);
+    } catch (error) {
+      console.error('Fehler beim Speichern des Device-Config-Events:', error);
     }
   }
 
@@ -210,20 +339,27 @@ class MongoDBManager {
 }
 
 // Websocket Manager
-class WebSocketManager {
+export class WebSocketManager {
   private ws: WebSocket | null = null;
   private sysapUri: string = '';
   private username: string = '';
   private password: string = '';
   private mongodbManager: MongoDBManager;
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 10;
-  private reconnectDelay: number = 5000; // 5 Sekunden
+  private readonly maxReconnectAttempts: number = 10;
+  private readonly baseReconnectDelay: number = 5000;  // 5 Sekunden Basis
+  private readonly maxReconnectDelay: number = 60000;  // max 60 Sekunden
   private isConnecting: boolean = false;
   private shouldReconnect: boolean = true;
+  private filterConfig: FilterConfig = { deviceSerials: new Set(), channelFunctions: new Set() };
+  private deviceFunctionMap: Map<string, Map<string, string>> = new Map();
 
   constructor(mongodbManager: MongoDBManager) {
     this.mongodbManager = mongodbManager;
+  }
+
+  setFilterConfig(config: FilterConfig): void {
+    this.filterConfig = config;
   }
 
   /**
@@ -280,13 +416,17 @@ class WebSocketManager {
         this.isConnecting = false;
         this.ws = null;
 
-        // Automatische Wiederverbindung
+        // Automatische Wiederverbindung mit Exponential Backoff
         if (this.shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
-          console.log(`Versuche Reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${this.reconnectDelay}ms...`);
+          const delay = Math.min(
+            this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+            this.maxReconnectDelay
+          );
+          console.log(`Versuche Reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
           setTimeout(() => {
             this.connectWebSocket();
-          }, this.reconnectDelay);
+          }, delay);
         } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
           console.error('Maximale Anzahl von Reconnect-Versuchen erreicht');
         }
@@ -300,18 +440,52 @@ class WebSocketManager {
   }
 
   /**
-   * Verarbeitet eingehende Websocket-Nachrichten
+   * Verarbeitet eingehende Websocket-Nachrichten und leitet sie gefiltert in die richtigen Collections
    */
   private async handleMessage(data: WebSocket.Data): Promise<void> {
     try {
-      const messageString = data.toString();
-      const message = JSON.parse(messageString);
+      const message: WebsocketMessage = JSON.parse(data.toString());
 
-      // Speichere die komplette Nachricht in MongoDB
-      await this.mongodbManager.saveEvent(message);
+      for (const sysapKey of Object.keys(message)) {
+        const payload = message[sysapKey];
 
+        // Device-Config-Änderungen → device_config Collection
+        if (payload.devices && Object.keys(payload.devices).length > 0) {
+          this.updateDeviceFunctionMap(payload.devices);
+          const filtered = filterDevices(payload.devices, this.filterConfig);
+          if (Object.keys(filtered).length > 0) {
+            await this.mongodbManager.saveDeviceConfigEvent({ sysap: sysapKey, devices: filtered });
+          }
+        }
+
+        // Datapoint-Änderungen → datapoints Collection
+        if (payload.datapoints && Object.keys(payload.datapoints).length > 0) {
+          const filtered = filterDatapoints(payload.datapoints, this.filterConfig, this.deviceFunctionMap);
+          if (Object.keys(filtered).length > 0) {
+            await this.mongodbManager.saveDatapointEvent({ sysap: sysapKey, datapoints: filtered });
+          }
+        }
+      }
     } catch (error) {
       console.error('Fehler beim Verarbeiten der Websocket-Nachricht:', error);
+    }
+  }
+
+  /**
+   * Aktualisiert die interne functionID-Map aus einem devices-Payload
+   */
+  private updateDeviceFunctionMap(devices: Record<string, Device>): void {
+    for (const [serial, device] of Object.entries(devices)) {
+      if (!device.channels) continue;
+      if (!this.deviceFunctionMap.has(serial)) {
+        this.deviceFunctionMap.set(serial, new Map());
+      }
+      const channelMap = this.deviceFunctionMap.get(serial)!;
+      for (const [chanId, channel] of Object.entries(device.channels)) {
+        if (channel.functionID) {
+          channelMap.set(chanId, channel.functionID);
+        }
+      }
     }
   }
 
@@ -376,7 +550,12 @@ class FreeAtHomeMongoDBAddon {
     // MongoDB Konfiguration
     const mongodbUri = defaultConfig.mongodbUri || process.env.MONGODB_URI;
     const mongodbDb = defaultConfig.mongodbDb || process.env.MONGODB_DB || 'freeathome';
-    const mongodbCol = defaultConfig.mongodbCol || process.env.MONGODB_COL || 'device_changes';
+    const mongodbColDatapoints = defaultConfig.mongodbColDatapoints || process.env.MONGODB_COL_DATAPOINTS || 'datapoints';
+    const mongodbColDevices    = defaultConfig.mongodbColDevices    || process.env.MONGODB_COL_DEVICES    || 'device_config';
+
+    // Filter-Konfiguration
+    const filterConfig = parseFilterConfig(defaultConfig.filterDeviceSerials, defaultConfig.filterChannelFunctions);
+    this.websocketManager.setFilterConfig(filterConfig);
 
     // free@home Websocket Konfiguration
     const sysapUri = defaultConfig.sysapUri || process.env.FREEHOME_SYSAPP;
@@ -400,7 +579,7 @@ class FreeAtHomeMongoDBAddon {
     try {
       // Verbinde mit MongoDB
       console.log("Versuche MongoDB-Verbindung herzustellen...");
-      await this.mongodbManager.connect(mongodbUri, mongodbDb, mongodbCol);
+      await this.mongodbManager.connect(mongodbUri, mongodbDb, mongodbColDatapoints, mongodbColDevices);
 
       // Verbinde mit Websocket (nur wenn MongoDB erfolgreich verbunden ist)
       if (this.mongodbManager.connected) {
@@ -468,7 +647,10 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((error) => {
-  console.error("Kritischer Fehler beim Starten des Addons:", error);
-  process.exit(1);
-});
+// Nur ausführen wenn direkt gestartet (nicht wenn als Modul importiert, z.B. in Tests)
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Kritischer Fehler beim Starten des Addons:", error);
+    process.exit(1);
+  });
+}
