@@ -4,7 +4,7 @@ import {
   parseDatapointKey,
   filterDatapoints,
   filterDevices,
-} from '../main';
+} from '../filters';
 import type { Device } from '@busch-jaeger/free-at-home/lib/fhapi/models/Device';
 
 // ─── parseFilterConfig ────────────────────────────────────────────────────────

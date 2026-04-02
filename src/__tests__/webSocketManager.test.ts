@@ -1,5 +1,6 @@
-import { WebSocketManager, FilterConfig } from '../main';
-import type { MongoDBManager } from '../main';
+import { WebSocketManager } from '../webSocketManager';
+import type { FilterConfig } from '../types';
+import type { MongoDBManager } from '../mongodbManager';
 
 // ─── WebSocket mock ───────────────────────────────────────────────────────────
 

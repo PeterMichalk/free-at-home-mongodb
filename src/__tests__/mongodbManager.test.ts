@@ -1,4 +1,4 @@
-import { MongoDBManager } from '../main';
+import { MongoDBManager } from '../mongodbManager';
 
 // ─── MongoDB mock ─────────────────────────────────────────────────────────────
 

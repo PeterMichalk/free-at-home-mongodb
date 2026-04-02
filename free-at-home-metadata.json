@@ -1,6 +1,6 @@
 {
-  "name": "free@home MongoDB Logger",
-  "version": "1.1.1",
+  "name": "MongoDB Event Protokollierung",
+  "version": "1.1.2",
   "id": "tech.michalk.freeathome.mongodb",
   "license": "MIT",
   "description": "Speichert alle Änderungen im free@home Smarthome System in einer Azure MongoDB Datenbank. Überwacht alle Geräte, Channels und Datapoints via Websocket.",
