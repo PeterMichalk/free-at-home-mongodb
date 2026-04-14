@@ -200,13 +200,41 @@ describe('MongoDBManager.connect', () => {
   });
 });
 
+// ─── isNetworkError (private) ────────────────────────────────────────────────
+
+describe('MongoDBManager.isNetworkError', () => {
+  const isNetErr = (err: any) => (getMgr() as any).isNetworkError(err);
+
+  it.each([
+    'MongoNetworkError',
+    'MongoNetworkTimeoutError',
+    'MongoServerSelectionError',
+    'PoolClearedOnNetworkError',
+    'MongoTopologyClosedError',
+  ])('returns true for %s', (name) => {
+    expect(isNetErr({ name })).toBe(true);
+  });
+
+  it('returns false for non-network errors', () => {
+    expect(isNetErr({ name: 'MongoWriteConcernError' })).toBe(false);
+    expect(isNetErr({ name: 'Error' })).toBe(false);
+    expect(isNetErr({})).toBe(false);
+    expect(isNetErr(null)).toBe(false);
+  });
+});
+
 // ─── saveDatapointEvent() ────────────────────────────────────────────────────
 
 describe('MongoDBManager.saveDatapointEvent', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
     mockConnect.mockResolvedValue(undefined);
     mockCommand.mockResolvedValue({ ok: 1 });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it('inserts to the datapoints collection when connected', async () => {
@@ -236,15 +264,71 @@ describe('MongoDBManager.saveDatapointEvent', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('voll'));
     warnSpy.mockRestore();
   });
+
+  it('sets isConnected to false and buffers event on MongoNetworkError', async () => {
+    const networkErr = Object.assign(new Error('network'), { name: 'MongoNetworkError' });
+    mockInsertOne.mockRejectedValueOnce(networkErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+    jest.clearAllMocks();
+
+    await mgr.saveDatapointEvent({ dp: 'fail' });
+
+    expect(mgr.connected).toBe(false);
+    expect((mgr as any).pendingDatapoints).toHaveLength(1);
+    expect((mgr as any).pendingDatapoints[0]).toMatchObject({ dp: 'fail' });
+  });
+
+  it('schedules a reconnect timer on MongoServerSelectionError', async () => {
+    const networkErr = Object.assign(new Error('sel'), { name: 'MongoServerSelectionError' });
+    mockInsertOne.mockRejectedValueOnce(networkErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+
+    await mgr.saveDatapointEvent({ dp: 'sel' });
+
+    expect((mgr as any).reconnectTimer).not.toBeNull();
+    jest.clearAllTimers();
+  });
+
+  it('does not schedule a second timer when multiple network errors occur', async () => {
+    const networkErr = Object.assign(new Error('net'), { name: 'MongoNetworkError' });
+    mockInsertOne.mockRejectedValue(networkErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+
+    await mgr.saveDatapointEvent({ dp: '1' });
+    await mgr.saveDatapointEvent({ dp: '2' });
+
+    expect((mgr as any).reconnectAttempts).toBe(1);
+    jest.clearAllTimers();
+  });
+
+  it('does not buffer on non-network insertOne errors', async () => {
+    const appErr = Object.assign(new Error('write concern'), { name: 'MongoWriteConcernError' });
+    mockInsertOne.mockRejectedValueOnce(appErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+
+    await mgr.saveDatapointEvent({ dp: 'app-err' });
+
+    expect(mgr.connected).toBe(true);
+    expect((mgr as any).pendingDatapoints).toHaveLength(0);
+  });
 });
 
 // ─── saveDeviceConfigEvent() ─────────────────────────────────────────────────
 
 describe('MongoDBManager.saveDeviceConfigEvent', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
     mockConnect.mockResolvedValue(undefined);
     mockCommand.mockResolvedValue({ ok: 1 });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it('inserts to the devices collection when connected', async () => {
@@ -274,15 +358,47 @@ describe('MongoDBManager.saveDeviceConfigEvent', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('voll'));
     warnSpy.mockRestore();
   });
+
+  it('sets isConnected to false and buffers event on MongoNetworkTimeoutError', async () => {
+    const networkErr = Object.assign(new Error('timeout'), { name: 'MongoNetworkTimeoutError' });
+    mockInsertOne.mockRejectedValueOnce(networkErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+    jest.clearAllMocks();
+
+    await mgr.saveDeviceConfigEvent({ dev: 'fail' });
+
+    expect(mgr.connected).toBe(false);
+    expect((mgr as any).pendingDevices).toHaveLength(1);
+    expect((mgr as any).pendingDevices[0]).toMatchObject({ dev: 'fail' });
+    jest.clearAllTimers();
+  });
+
+  it('does not buffer on non-network insertOne errors', async () => {
+    const appErr = Object.assign(new Error('write'), { name: 'MongoWriteConcernError' });
+    mockInsertOne.mockRejectedValueOnce(appErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+
+    await mgr.saveDeviceConfigEvent({ dev: 'app-err' });
+
+    expect(mgr.connected).toBe(true);
+    expect((mgr as any).pendingDevices).toHaveLength(0);
+  });
 });
 
 // ─── disconnect() ─────────────────────────────────────────────────────────────
 
 describe('MongoDBManager.disconnect', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
     mockConnect.mockResolvedValue(undefined);
     mockCommand.mockResolvedValue({ ok: 1 });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it('calls client.close()', async () => {
@@ -304,6 +420,19 @@ describe('MongoDBManager.disconnect', () => {
     const mgr = getMgr();
     await expect(mgr.disconnect()).resolves.not.toThrow();
     expect(mockClose).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending reconnect timer on disconnect', async () => {
+    const networkErr = Object.assign(new Error('net'), { name: 'MongoNetworkError' });
+    mockInsertOne.mockRejectedValueOnce(networkErr);
+    const mgr = getMgr();
+    await mgr.connect(REGULAR_URI);
+    await mgr.saveDatapointEvent({ dp: 'x' });
+    expect((mgr as any).reconnectTimer).not.toBeNull();
+
+    await mgr.disconnect();
+
+    expect((mgr as any).reconnectTimer).toBeNull();
   });
 });
 

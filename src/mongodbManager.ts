@@ -13,6 +13,51 @@ export class MongoDBManager {
   private collectionNameDevices: string = 'device_config';
   private pendingDatapoints: any[] = [];
   private pendingDevices: any[] = [];
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts: number = 0;
+  private readonly maxReconnectAttempts: number = 10;
+  private readonly baseReconnectDelay: number = 5000;
+  private readonly maxReconnectDelay: number = 300000;
+
+  private isNetworkError(error: any): boolean {
+    const name: string = error?.name ?? '';
+    return (
+      name === 'MongoNetworkError' ||
+      name === 'MongoNetworkTimeoutError' ||
+      name === 'MongoServerSelectionError' ||
+      name === 'PoolClearedOnNetworkError' ||
+      name === 'MongoTopologyClosedError'
+    );
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) return;
+
+    const attempt = ++this.reconnectAttempts;
+    const delay = Math.min(
+      this.baseReconnectDelay * Math.pow(2, attempt - 1),
+      this.maxReconnectDelay
+    );
+
+    console.log(`MongoDB-Reconnect (Versuch ${attempt}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.client) {
+        try { await this.client.close(); } catch (_) {}
+        this.client = null;
+      }
+      try {
+        await this.connect(this.connectionString);
+      } catch (error) {
+        console.error('MongoDB-Reconnect fehlgeschlagen:', error);
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.scheduleReconnect();
+        } else {
+          console.error('Maximale Anzahl von MongoDB-Reconnect-Versuchen erreicht');
+        }
+      }
+    }, delay);
+  }
 
   /**
    * Normalisiert den Connection String für Azure Cosmos DB
@@ -139,6 +184,7 @@ export class MongoDBManager {
       this.collectionDevices    = this.db.collection(this.collectionNameDevices);
 
       this.isConnected = true;
+      this.reconnectAttempts = 0;
       console.log(`MongoDB erfolgreich verbunden: ${this.databaseName} (${this.collectionNameDatapoints}, ${this.collectionNameDevices})`);
 
       if (this.pendingDatapoints.length > 0) {
@@ -199,6 +245,16 @@ export class MongoDBManager {
       await this.collectionDatapoints.insertOne(document);
     } catch (error) {
       console.error('Fehler beim Speichern des Datapoint-Events:', error);
+      if (this.isNetworkError(error)) {
+        this.isConnected = false;
+        if (this.pendingDatapoints.length < this.maxPendingEvents) {
+          this.pendingDatapoints.push(document);
+          console.warn(`Datapoint-Event gepuffert nach Netzwerkfehler (${this.pendingDatapoints.length}/${this.maxPendingEvents})`);
+        } else {
+          console.warn('Datapoint-Puffer voll, Event wird verworfen');
+        }
+        this.scheduleReconnect();
+      }
     }
   }
 
@@ -220,6 +276,16 @@ export class MongoDBManager {
       await this.collectionDevices.insertOne(document);
     } catch (error) {
       console.error('Fehler beim Speichern des Device-Config-Events:', error);
+      if (this.isNetworkError(error)) {
+        this.isConnected = false;
+        if (this.pendingDevices.length < this.maxPendingEvents) {
+          this.pendingDevices.push(document);
+          console.warn(`Device-Config-Event gepuffert nach Netzwerkfehler (${this.pendingDevices.length}/${this.maxPendingEvents})`);
+        } else {
+          console.warn('Device-Config-Puffer voll, Event wird verworfen');
+        }
+        this.scheduleReconnect();
+      }
     }
   }
 
@@ -227,6 +293,10 @@ export class MongoDBManager {
    * Trennt die MongoDB Verbindung
    */
   async disconnect(): Promise<void> {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.client) {
       try {
         await this.client.close();
